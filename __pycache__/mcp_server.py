@@ -13,13 +13,10 @@ def run_solver(alpha: float, sigma: float = 0.1) -> str:
     """
     Run the 1D heat diffusion solver and return the final temperature profile.
 
-    Parameters
-    ----------
     alpha : thermal diffusivity to test
     sigma : width of the initial Gaussian (default 0.1)
 
     Returns
-    -------
     JSON string with x grid and final temperature T
     """
     x, T = solve(alpha=alpha, sigma=sigma)
@@ -47,16 +44,13 @@ def compare_to_target(alpha: float, target_T: list[float], sigma: float = 0.1) -
     """
     Run the solver with a given alpha and compare to the target temperature profile.
     Returns MSE plus rich shape hints so the agent can reason about which direction
-    to adjust alpha.
+    to adjust alpha
 
-    Parameters
-    ----------
     alpha    : thermal diffusivity to test
     target_T : observed/target temperature profile (list of floats)
     sigma    : width of initial Gaussian (default 0.1)
 
     Returns
-    -------
     JSON with alpha, mse, peak_error, width_error, and a hint string
     """
     x, T = solve(alpha=alpha, sigma=sigma)
@@ -65,13 +59,13 @@ def compare_to_target(alpha: float, target_T: list[float], sigma: float = 0.1) -
     mse         = float(np.mean((T - target) ** 2))
     peak_T      = float(T.max())
     peak_target = float(target.max())
-    peak_error  = float(peak_T - peak_target)   # + = too peaked, - = too flat
+    peak_error  = float(peak_T - peak_target)   # + too peaked, - too flat
 
     width_T      = _curve_width(x, T)
     width_target = _curve_width(x, target)
-    width_error  = float(width_T - width_target)  # + = too wide, - = too narrow
+    width_error  = float(width_T - width_target)  # + too wide, - too narrow
 
-    # hint
+    # hint we are doing (this is pretty basic right now)
     if mse < 1e-6:
         hint = "Alpha is correct"
     elif peak_error > 0:
