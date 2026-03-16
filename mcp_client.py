@@ -20,7 +20,11 @@ from solver import solve  # generate the target profile
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 async def run():
-    # generate a target profile with a known alpha
+    # load heat equation context
+    with open("heat_equation_context.txt", "r") as f:
+        physics_context = f.read()
+    
+    # generate a target profile with a known alpha  
     TRUE_ALPHA = 0.006
     _, target_T = solve(alpha=TRUE_ALPHA)
     target_list = target_T.tolist()
@@ -69,64 +73,82 @@ async def run():
         
         messages = [
             {
+                "role": "system",
+                "content": (
+                    f"You are an expert in heat diffusion and inverse problems. "
+                    f"Use the following reference material to reason analytically "
+                    f"about how alpha affects the temperature profile:\n\n"
+                    f"{physics_context}"
+                )
+            },
+            {
                 "role": "user",
                 "content": (
-                    f"You are solving an inverse heat diffusion problem. "
-                    f"A temperature profile was measured after 5 seconds. "
-                    f"Your job is to find the value of alpha (thermal diffusivity) "
-                    f"that produced it. Alpha is somewhere between 0.001 and 0.02.\n\n"
-                    f"Use the compare_to_target tool repeatedly, adjusting alpha "
-                    f"each time to minimize the MSE. "
-                    f"Stop when MSE < 1e-6 or after 10 attempts.\n\n"
-                    f"Target profile: {json.dumps(target_list[:20])}... "
-                    f"(first 20 of {len(target_list)} values)"
+                    f"Find the value of alpha that produced this target temperature "
+                    f"profile after t=5 seconds of heat diffusion.\n\n"
+                    f"IMPORTANT: First use the peak height formula from your reference "
+                    f"sheet to compute a good initial guess for alpha. Then refine it "
+                    f"using gradient descent with compare_to_target.\n\n"
+                    f"Use adaptive learning rate: lr = 0.01 * alpha / abs(gradient)\n"
+                    f"Stop when MSE < 1e-4 or after 10 steps.\n\n"
+                    f"Target profile (first 20 of {len(target_list)} values): "
+                    f"{json.dumps(target_list[:20])}\n"
+                    f"Target peak value: {max(target_list):.6f}\n"
+                    f"Target average value: {np.mean(target_list):.6f}"
                 ),
             }
         ]
 
         print("\n--- Agent starting ---\n")
 
-        for step in range(15):  # max iterations
+        for step in range(15):
             response = client.chat.completions.create(
                 model="gemini-2.5-flash",
-                tools=tools,
                 messages=messages,
-                tool_choice="auto",
+                tools=tools,
+                tool_choice="required",
             )
-
+ 
             msg = response.choices[0].message
             messages.append(msg)
-
-            # check if agent is done (no tool calls)
+ 
             if not msg.tool_calls:
                 print("\n--- Agent finished ---")
                 print(msg.content)
                 break
-
-            # process tool calls
+ 
+            mse_achieved = False
             for tool_call in msg.tool_calls:
                 args = json.loads(tool_call.function.arguments)
-                print(f"Step {step+1}: calling {tool_call.function.name} with alpha={args.get('alpha')}")
-
-                # inject the full target profile if needed
+                alpha_tried = args.get('alpha')
+                print(f"Step {step+1}: calling {tool_call.function.name} with alpha={alpha_tried}")
+ 
                 if tool_call.function.name == "compare_to_target":
                     args["target_T"] = target_list
-
-                # call the tool on the MCP server
+ 
                 result = await session.call_tool(tool_call.function.name, args)
                 result_text = result.content[0].text
                 result_data = json.loads(result_text)
-                print(f"         MSE={result_data.get('mse', 'N/A'):.2e}  hint: {result_data.get('hint', '')}")
-
-                # add tool result back to messages
+                mse = result_data.get('mse', float('inf'))
+                print(f"         MSE={mse:.2e}  gradient={result_data.get('gradient', 'N/A'):.4f}")
+ 
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": result_text,
                 })
+ 
+                if mse < 1e-4:
+                    mse_achieved = True
+                    print(f"\nStopping early: MSE {mse:.2e} is < 1e-4")
+                    print(f"Agent found alpha: {alpha_tried}")
+                    break
 
+            if mse_achieved:
+                break
+ 
         print(f"\nTrue alpha was: {TRUE_ALPHA}")
-
-
+ 
+ 
 if __name__ == "__main__":
     asyncio.run(run())

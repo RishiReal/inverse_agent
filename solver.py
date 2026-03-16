@@ -15,6 +15,7 @@ def solve(alpha=0.004, sigma=0.1, dx=0.01, dt=0.0025, t_final=5.0, plot=False):
     x : spatial grid
     T : final temperature profile
     """
+    print(f"SOLVER CALLED with alpha={alpha}")
 
     # stability check
     r = alpha * dt / dx**2
@@ -48,5 +49,5 @@ def solve(alpha=0.004, sigma=0.1, dx=0.01, dt=0.0025, t_final=5.0, plot=False):
 
 
 if __name__ == "__main__":
-    x, T = solve(alpha=0.004, sigma=0.1, plot=True, t_final=300)
+    x, T = solve(alpha=0.004, sigma=0.1, plot=True, t_final=5)
     print(f"Max temperature at t=___: {T.max():.6f}")
