@@ -79,6 +79,9 @@ async def run():
                     f"Use the following reference material to reason analytically "
                     f"about how alpha affects the temperature profile:\n\n"
                     f"{physics_context}"
+                    f"IMPORTANT: You must ONLY use the compare_to_target tool to evaluate alpha. "
+                    f"Do NOT compute MSE or gradients yourself. "
+                    f"Do NOT return any results without calling the tool first."
                 )
             },
             {

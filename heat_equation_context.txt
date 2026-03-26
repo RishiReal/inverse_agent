@@ -1,66 +1,18 @@
-# Heat Equation Reference Sheet for Inverse Solver Agent
+The forward problem: given alpha, solve dT/dt = alpha * d²T/dx²
 
-## The PDE
-The 1D heat equation describes how temperature T(x,t) evolves over time:
-
-    dT/dt = alpha * d²T/dx²
-
-where alpha (thermal diffusivity) controls how fast heat spreads.
-- Large alpha → heat spreads FAST → temperature profile flattens quickly
-- Small alpha → heat spreads SLOW → temperature profile stays peaked longer
-
-## Numerical Solver (Explicit Finite Difference)
-The domain is discretized as:
-- x: 201 points from 0 to 1, dx = 0.01
-- dt = 0.0025, t_final = 5.0 seconds
-- Stability condition (CFL): r = alpha * dt / dx² <= 0.5
-
-Update rule at each timestep:
+Discretization:
     T_new[i] = T[i] + r * (T[i+1] - 2*T[i] + T[i-1])
+    where r = alpha * dt / dx²
 
-Boundary conditions: T=0 at x=0 and x=1 (Dirichlet)
+Grid: x = 0 to 1, dx=0.01, dt auto-set, t_final as given
+Initial condition: T(x,0) = exp(-(x-0.5)² / (2*0.1²))
+Boundary conditions: T=0 at x=0 and x=1
 
-## Initial Condition
-Gaussian bump centered at x=0.5:
-    T(x, 0) = exp(-(x - 0.5)² / (2 * sigma²))    sigma = 0.1
+Large alpha = faster diffusion = flatter profile.
+Small alpha = slower diffusion = taller peak.
 
-## Analytical Solution (no boundaries)
-Without boundary effects, a Gaussian stays Gaussian but spreads over time:
-    T(x, t) = sigma/sqrt(sigma² + 2*alpha*t) * exp(-(x-0.5)² / (2*(sigma² + 2*alpha*t)))
-
-Effective width at time t:
-    sigma_eff(t) = sqrt(sigma² + 2*alpha*t)
-
-Peak height at time t:
-    peak(t) = sigma / sigma_eff(t) = sigma / sqrt(sigma² + 2*alpha*t)
-
-Average temperature scales as:
-    avg(T) ~ 1 / sqrt(alpha)
-
-So: if avg(T_agent) > avg(T_target) → alpha is TOO SMALL → INCREASE alpha
-    if avg(T_agent) < avg(T_target) → alpha is TOO LARGE → DECREASE alpha
-
-## Key Insight for Inverse Solving
-Given a target profile T_target measured at t=5s, you can estimate alpha directly:
-
-From peak height:
-    peak_target = sigma / sqrt(sigma² + 2*alpha*5)
-    → solve for alpha:
-    alpha = (sigma^2/peak_target^2 - sigma^2) / (2 * t_final)
-    alpha = sigma^2 * (1/peak_target^2 - 1) / (2 * t_final)
-
-This gives you a VERY good initial guess before doing gradient descent.
-Use this formula first, then refine with gradient steps.
-
-## Gradient Descent Update Rule
-    alpha_new = alpha - learning_rate * gradient
-
-where gradient = dMSE/dalpha (returned by compare_to_target tool).
-
-Recommended adaptive learning rate:
-    lr = 0.01 * alpha / abs(gradient)   (normalized to current alpha scale)
-
-## Typical Alpha Range
-Valid range: 0.001 to 0.02
-Good starting guess from peak formula above, then refine.
-Convergence threshold: MSE < 1e-6
+To evaluate your alpha call compare_to_target(alpha).
+It returns MSE and gradient dMSE/dalpha.
+Update rule: alpha = alpha - (0.1 * alpha / abs(gradient)) * gradient
+Start with alpha=0.01. Stop when MSE < 1e-5. Alpha is between 0.001 and 0.02.
+You MUST call compare_to_target to get MSE — do NOT compute it yourself.
