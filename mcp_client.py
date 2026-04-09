@@ -1,35 +1,18 @@
 # mcp_client.py
-# MCP client connects to mcp_server.py via stdio,
-# then uses Gemini to iteratively find the alpha that produced a target profile
-
 import asyncio
 import json
 import os
 from contextlib import AsyncExitStack
 
-import numpy as np
-from openai import OpenAI
+from groq import Groq
+from dotenv import load_dotenv
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from dotenv import load_dotenv
-import os
-
-from solver import solve  # generate the target profile
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
-async def run():
-    # load heat equation context
-    with open("heat_equation_context.txt", "r") as f:
-        physics_context = f.read()
+async def run_agent():
+    load_dotenv()
     
-    # generate a target profile with a known alpha  
-    TRUE_ALPHA = 0.006
-    _, target_T = solve(alpha=TRUE_ALPHA)
-    target_list = target_T.tolist()
-    print(f"Target generated with alpha={TRUE_ALPHA}  (agent must find this)\n")
-
     server_params = StdioServerParameters(
         command="python",
         args=["mcp_server.py"],
@@ -41,64 +24,36 @@ async def run():
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
 
-        # list tools so we can pass them to Gemini
+        # fetch tools from MCP Server
         tools_response = await session.list_tools()
         tools = []
         for t in tools_response.tools:
-            # copy the schema because need to modify
-            schema = t.inputSchema.copy()
-            if t.name == "compare_to_target":
-                # Remove target_T so LLM doesn't send
-                if "target_T" in schema.get("properties", {}):
-                    del schema["properties"]["target_T"]
-                if "target_T" in schema.get("required", []):
-                    schema["required"].remove("target_T")
-            
             tools.append({
                 "type": "function",
                 "function": {
                     "name": t.name,
                     "description": t.description,
-                    "parameters": schema,
+                    "parameters": t.inputSchema,
                 }
             })
-        print("Tools available:", [t["function"]["name"] for t in tools])
-
-        load_dotenv()
-        # load API key
-        client = OpenAI(
-            api_key=os.getenv("GEMINI_API_KEY"),
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-        )
+            
+        print("Tools available from MCP Server:", [t["function"]["name"] for t in tools])
         
+        client = Groq()
+
         messages = [
             {
                 "role": "system",
                 "content": (
-                    f"You are an expert in heat diffusion and inverse problems. "
-                    f"Use the following reference material to reason analytically "
-                    f"about how alpha affects the temperature profile:\n\n"
-                    f"{physics_context}"
-                    f"IMPORTANT: You must ONLY use the compare_to_target tool to evaluate alpha. "
-                    f"Do NOT compute MSE or gradients yourself. "
-                    f"Do NOT return any results without calling the tool first."
+                    "You are an AI agent designed to find a specific thermal diffusivity (alpha). "
+                    "You have access to a tool called 'evaluate_mse'. "
+                    "Guess an alpha, evaluate the MSE, and continuously adjust your guesses "
+                    "to minimize the MSE until you find the exact alpha where MSE is < 1e-6."
                 )
             },
             {
                 "role": "user",
-                "content": (
-                    f"Find the value of alpha that produced this target temperature "
-                    f"profile after t=5 seconds of heat diffusion.\n\n"
-                    f"IMPORTANT: First use the peak height formula from your reference "
-                    f"sheet to compute a good initial guess for alpha. Then refine it "
-                    f"using gradient descent with compare_to_target.\n\n"
-                    f"Use adaptive learning rate: lr = 0.01 * alpha / abs(gradient)\n"
-                    f"Stop when MSE < 1e-4 or after 10 steps.\n\n"
-                    f"Target profile (first 20 of {len(target_list)} values): "
-                    f"{json.dumps(target_list[:20])}\n"
-                    f"Target peak value: {max(target_list):.6f}\n"
-                    f"Target average value: {np.mean(target_list):.6f}"
-                ),
+                "content": "Please find the correct alpha using your tool. Start with a guess like 0.001."
             }
         ]
 
@@ -106,52 +61,65 @@ async def run():
 
         for step in range(15):
             response = client.chat.completions.create(
-                model="gemini-2.5-flash",
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
                 messages=messages,
                 tools=tools,
-                tool_choice="required",
+                tool_choice="required" if step == 0 else "auto",
+                temperature=1,
+                max_completion_tokens=1024,
+                top_p=1,
+                stream=False,
+                stop=None
             )
- 
             msg = response.choices[0].message
-            messages.append(msg)
- 
+            
+            # Format msg dump to append properly for multi-tool calling compatibility
+            msg_dict = msg.model_dump(exclude_unset=True)
+            messages.append(msg_dict)
+
             if not msg.tool_calls:
-                print("\n--- Agent finished ---")
-                print(msg.content)
+                print(f"Step {step+1}: Agent finished with response: {msg.content}")
                 break
- 
+
             mse_achieved = False
             for tool_call in msg.tool_calls:
-                args = json.loads(tool_call.function.arguments)
-                alpha_tried = args.get('alpha')
-                print(f"Step {step+1}: calling {tool_call.function.name} with alpha={alpha_tried}")
- 
-                if tool_call.function.name == "compare_to_target":
-                    args["target_T"] = target_list
- 
-                result = await session.call_tool(tool_call.function.name, args)
-                result_text = result.content[0].text
-                result_data = json.loads(result_text)
-                mse = result_data.get('mse', float('inf'))
-                print(f"         MSE={mse:.2e}  gradient={result_data.get('gradient', 'N/A'):.4f}")
- 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result_text,
-                })
- 
-                if mse < 1e-4:
-                    mse_achieved = True
-                    print(f"\nStopping early: MSE {mse:.2e} is < 1e-4")
-                    print(f"Agent found alpha: {alpha_tried}")
-                    break
+                if tool_call.function.name == "evaluate_mse":
+                    args = json.loads(tool_call.function.arguments)
+                    alpha_tried = args.get('alpha')
+                    
+                    try:
+                        # call tool in mcp server
+                        result = await session.call_tool("evaluate_mse", args)
+                        result_text = result.content[0].text
+                        result_data = json.loads(result_text)
+                        
+                        mse = result_data.get('mse', float('inf'))
+                        print(f"Step {step+1}: evaluate_mse(alpha={alpha_tried}) -> MSE={mse:.2e}")
+                        
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result_text
+                        })
+                        
+                        if mse < 1e-6:
+                            print(f"\nSuccess! Found correct alpha: {alpha_tried} with MSE {mse:.2e}")
+                            mse_achieved = True
+                            break
+                        
+                    except Exception as e:
+                        print(f"Step {step+1}: Tool execution failed: {e}")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({"error": str(e)})
+                        })
 
             if mse_achieved:
                 break
- 
-        print(f"\nTrue alpha was: {TRUE_ALPHA}")
- 
- 
+                
+        else:
+            print("\n--- Agent finished without finding exact alpha within steps limit ---")
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(run_agent())
