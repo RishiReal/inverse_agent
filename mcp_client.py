@@ -16,6 +16,7 @@ async def run_agent():
     server_params = StdioServerParameters(
         command="python",
         args=["mcp_server.py"],
+        env={**os.environ}
     )
 
     async with AsyncExitStack() as stack:
@@ -45,41 +46,62 @@ async def run_agent():
             {
                 "role": "system",
                 "content": (
-                    "You are an AI agent designed to find a specific thermal diffusivity (alpha). "
-                    "You have access to a tool called 'evaluate_mse'. "
-                    "Guess an alpha, evaluate the MSE, and continuously adjust your guesses "
-                    "to minimize the MSE until you find the exact alpha where MSE is < 1e-6."
+                    "You are an AI agent solving an inverse problem for the 1D heat equation: "
+                    "dT/dt = alpha * d²T/dx². A Gaussian pulse was placed on a 1D domain and "
+                    "allowed to diffuse for some time using a specific (unknown) thermal diffusivity alpha. "
+                    "Your job is to find that alpha. A larger alpha means faster diffusion (the pulse "
+                    "spreads and flattens more quickly).\n\n"
+                    "You have one tool: 'evaluate_mse', which returns the Mean Squared Error between "
+                    "a simulation with your guessed alpha and the target. Use your previous guesses "
+                    "and their MSE values to inform your next guess. Stop when MSE < 1e-6."
                 )
             },
             {
                 "role": "user",
-                "content": "Please find the correct alpha using your tool. Start with a guess like 0.001."
+                "content": "Find the correct alpha. Use the evaluate_mse tool to evaluate your guesses. Stop when MSE < 1e-6."
             }
         ]
 
         print("\n--- Agent starting ---\n")
 
-        for step in range(15):
-            response = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=messages,
-                tools=tools,
-                tool_choice="required" if step == 0 else "auto",
-                temperature=1,
-                max_completion_tokens=1024,
-                top_p=1,
-                stream=False,
-                stop=None
-            )
+        for step in range(25):
+            try:
+                response = client.chat.completions.create(
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="required",
+                    temperature=1,
+                    max_completion_tokens=1024,
+                    top_p=1,
+                    stream=False,
+                    stop=None,
+                    parallel_tool_calls=False
+                )
+            except Exception as api_err:
+                err_str = str(api_err)
+                if "tool_use_failed" in err_str:
+                    # LLM tried to give a text answer instead of calling the tool.
+                    # Force it back on track by injecting a stern reminder.
+                    print(f"Step {step+1}: Agent tried to stop early — pushing it back...")
+                    messages.append({
+                        "role": "user",
+                        "content": "You have NOT found the answer yet. You MUST call evaluate_mse with your next guess. Do not stop."
+                    })
+                    continue
+                raise
+
             msg = response.choices[0].message
             
-            # Format msg dump to append properly for multi-tool calling compatibility
+            # Gemini rejects null content values — ensure it's always a string
             msg_dict = msg.model_dump(exclude_unset=True)
+            if msg_dict.get("content") is None:
+                msg_dict["content"] = ""
             messages.append(msg_dict)
 
             if not msg.tool_calls:
                 print(f"Step {step+1}: Agent finished with response: {msg.content}")
-                break
+                return step + 1
 
             mse_achieved = False
             for tool_call in msg.tool_calls:
@@ -88,7 +110,6 @@ async def run_agent():
                     alpha_tried = args.get('alpha')
                     
                     try:
-                        # call tool in mcp server
                         result = await session.call_tool("evaluate_mse", args)
                         result_text = result.content[0].text
                         result_data = json.loads(result_text)
@@ -116,10 +137,11 @@ async def run_agent():
                         })
 
             if mse_achieved:
-                break
+                return step + 1
                 
         else:
             print("\n--- Agent finished without finding exact alpha within steps limit ---")
+            return -1
 
 if __name__ == "__main__":
     asyncio.run(run_agent())
