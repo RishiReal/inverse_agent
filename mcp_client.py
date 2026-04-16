@@ -10,6 +10,26 @@ from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+import datetime
+
+LOGS_DIR = "logs"
+
+def _write_log(log, alpha_tried, success):
+    os.makedirs(LOGS_DIR, exist_ok=True)  # ensure logs/ folder exists
+    t_final = os.environ.get("HEAT_T_FINAL", "unknown")
+    out = {
+        "t_final": float(t_final) if t_final != "unknown" else t_final,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "success": success,
+        "final_alpha": alpha_tried,
+        "n_steps": len(log),
+        "steps": log,
+    }
+    fname = os.path.join(LOGS_DIR, f"log_t{t_final}_{datetime.datetime.now().strftime('%H%M%S')}.json")
+    with open(fname, "w") as f:
+        json.dump(out, f, indent=2)
+    print(f"Log saved → {fname}")
+
 async def run_agent():
     load_dotenv()
     
@@ -46,14 +66,10 @@ async def run_agent():
             {
                 "role": "system",
                 "content": (
-                    "You are an AI agent solving an inverse problem for the 1D heat equation: "
-                    "dT/dt = alpha * d²T/dx². A Gaussian pulse was placed on a 1D domain and "
-                    "allowed to diffuse for some time using a specific (unknown) thermal diffusivity alpha. "
-                    "Your job is to find that alpha. A larger alpha means faster diffusion (the pulse "
-                    "spreads and flattens more quickly).\n\n"
-                    "You have one tool: 'evaluate_mse', which returns the Mean Squared Error between "
-                    "a simulation with your guessed alpha and the target. Use your previous guesses "
-                    "and their MSE values to inform your next guess. Stop when MSE < 1e-6."
+                    "You are solving an inverse problem for the 1D heat equation: dT/dt = alpha * d²T/dx². "
+                    "A Gaussian pulse diffused with unknown alpha. Find alpha.\n\n"
+                    "You can call evaluate_mse(alpha), which returns the error between your simulation "
+                    "and the target. Use previous results to guide your guesses. Stop when MSE < 1e-6."
                 )
             },
             {
@@ -63,6 +79,8 @@ async def run_agent():
         ]
 
         print("\n--- Agent starting ---\n")
+        log = []
+        alpha_tried = None  # track last tried alpha for final log
 
         for step in range(25):
             try:
@@ -101,6 +119,7 @@ async def run_agent():
 
             if not msg.tool_calls:
                 print(f"Step {step+1}: Agent finished with response: {msg.content}")
+                _write_log(log, alpha_tried, success=False)
                 return step + 1
 
             mse_achieved = False
@@ -116,6 +135,12 @@ async def run_agent():
                         
                         mse = result_data.get('mse', float('inf'))
                         print(f"Step {step+1}: evaluate_mse(alpha={alpha_tried}) -> MSE={mse:.2e}")
+
+                        log.append({
+                            "step": step + 1,
+                            "alpha": alpha_tried,
+                            "mse": mse,
+                        })  
                         
                         messages.append({
                             "role": "tool",
@@ -125,6 +150,7 @@ async def run_agent():
                         
                         if mse < 1e-6:
                             print(f"\nSuccess! Found correct alpha: {alpha_tried} with MSE {mse:.2e}")
+                            _write_log(log, alpha_tried, success=True)
                             mse_achieved = True
                             break
                         
@@ -138,10 +164,10 @@ async def run_agent():
 
             if mse_achieved:
                 return step + 1
-                
-        else:
-            print("\n--- Agent finished without finding exact alpha within steps limit ---")
-            return -1
+
+        print("\n--- Agent finished without finding exact alpha within steps limit ---")
+        _write_log(log, alpha_tried=alpha_tried, success=False)
+        return -1
 
 if __name__ == "__main__":
     asyncio.run(run_agent())
