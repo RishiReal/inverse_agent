@@ -5,7 +5,7 @@ import collections
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-def plot_alpha_logs():
+def plot_alpha_logs(log_prefix="logs_1sensor_alpha"):
     alphas = ["0.05", "0.005", "0.006"]
     os.makedirs("figures", exist_ok=True)
     
@@ -13,7 +13,7 @@ def plot_alpha_logs():
     grouped_logs = collections.defaultdict(list)
     
     for target_alpha in alphas:
-        log_dir = f"logs_alpha_{target_alpha}"
+        log_dir = f"{log_prefix}_{target_alpha}"
         if not os.path.isdir(log_dir):
             continue
             
@@ -36,10 +36,11 @@ def plot_alpha_logs():
             continue
             
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-        fig.suptitle(f"Agent Convergence (Target Alpha = {target_alpha}, t_final = {t_final})", fontsize=16, fontweight='bold', y=1.05)
+        fig.suptitle(f"Agent Convergence (Target Alpha = {target_alpha}, t_final = {t_final})",
+                     fontsize=16, fontweight='bold', y=1.05)
         
         # Use colormap to generate a unique color for each attempt
-        cmap = cm.get_cmap('tab10')
+        cmap = plt.get_cmap('tab10')
         
         # Group identical trajectories
         unique_trajectories = collections.defaultdict(list)
@@ -75,7 +76,6 @@ def plot_alpha_logs():
 
         ax1.set_xlabel("Agent Step", fontsize=12)
         ax1.set_ylabel("Mean Squared Error (MSE)", fontsize=12)
-        ax1.set_yscale("log")
         ax1.set_title("Error Minimization", fontsize=14)
         ax1.grid(True, linestyle=":", alpha=0.7)
         ax1.legend(loc='upper right', bbox_to_anchor=(1.35, 1.0))
@@ -83,14 +83,13 @@ def plot_alpha_logs():
         ax2.set_xlabel("Agent Step", fontsize=12)
         ax2.set_ylabel("Guessed Alpha", fontsize=12)
         ax2.set_title("Alpha Search Trajectory", fontsize=14)
-        ax2.set_yscale("log")
         ax2.grid(True, linestyle=":", alpha=0.7)
         ax2.legend(loc='upper right', bbox_to_anchor=(1.45, 1.0))
         
         # Adjust layout to account for outside legends
         plt.tight_layout(rect=[0, 0, 0.85, 1])
         
-        out_path = f"figures/convergence_alpha_{target_alpha}_tfinal_{t_final}.png"
+        out_path = f"figures/convergence_1sensor_alpha_{target_alpha}_tfinal_{t_final}.png"
         plt.savefig(out_path, dpi=150, bbox_inches='tight')
         plt.close()
         out_paths.append(out_path)

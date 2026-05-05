@@ -12,10 +12,9 @@ from mcp.client.stdio import stdio_client
 
 import datetime
 
-LOGS_DIR = "logs"
-
 def _write_log(log, alpha_tried, success):
-    os.makedirs(LOGS_DIR, exist_ok=True)  # ensure logs/ folder exists
+    logs_dir = os.environ.get("LOGS_DIR", "logs")
+    os.makedirs(logs_dir, exist_ok=True)
     t_final = os.environ.get("HEAT_T_FINAL", "unknown")
     out = {
         "t_final": float(t_final) if t_final != "unknown" else t_final,
@@ -25,14 +24,14 @@ def _write_log(log, alpha_tried, success):
         "n_steps": len(log),
         "steps": log,
     }
-    fname = os.path.join(LOGS_DIR, f"log_t{t_final}_{datetime.datetime.now().strftime('%H%M%S')}.json")
+    fname = os.path.join(logs_dir, f"log_t{t_final}_{datetime.datetime.now().strftime('%H%M%S')}.json")
     with open(fname, "w") as f:
         json.dump(out, f, indent=2)
     print(f"Log saved → {fname}")
 
 async def run_agent():
     load_dotenv()
-    
+
     server_params = StdioServerParameters(
         command="python",
         args=["mcp_server.py"],
@@ -45,7 +44,6 @@ async def run_agent():
         session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
 
-        # fetch tools from MCP Server
         tools_response = await session.list_tools()
         tools = []
         for t in tools_response.tools:
@@ -57,9 +55,9 @@ async def run_agent():
                     "parameters": t.inputSchema,
                 }
             })
-            
+
         print("Tools available from MCP Server:", [t["function"]["name"] for t in tools])
-        
+
         client = Groq()
 
         messages = [
@@ -69,7 +67,8 @@ async def run_agent():
                     "You are solving an inverse problem for the 1D heat equation: dT/dt = alpha * d²T/dx². "
                     "A Gaussian pulse diffused with unknown alpha. Find alpha.\n\n"
                     "You can call evaluate_mse(alpha), which returns the error between your simulation "
-                    "and the target. Use previous results to guide your guesses. Stop when MSE < 1e-6."
+                    "and the target. Use previous results to guide your guesses. Try to minimize MSE. "
+                    "Correct your guesses in the direction of decreasing MSE. Stop when MSE < 1e-6."
                 )
             },
             {
@@ -80,7 +79,7 @@ async def run_agent():
 
         print("\n--- Agent starting ---\n")
         log = []
-        alpha_tried = None  # track last tried alpha for final log
+        alpha_tried = None
 
         for step in range(25):
             try:
@@ -99,9 +98,8 @@ async def run_agent():
             except Exception as api_err:
                 err_str = str(api_err)
                 if "tool_use_failed" in err_str:
-                    # LLM tried to give a text answer instead of calling the tool.
-                    # Force it back on track by injecting a stern reminder.
                     print(f"Step {step+1}: Agent tried to stop early — pushing it back...")
+                    print(f"Raw error: {api_err}")
                     messages.append({
                         "role": "user",
                         "content": "You have NOT found the answer yet. You MUST call evaluate_mse with your next guess. Do not stop."
@@ -110,8 +108,7 @@ async def run_agent():
                 raise
 
             msg = response.choices[0].message
-            
-            # Gemini rejects null content values — ensure it's always a string
+
             msg_dict = msg.model_dump(exclude_unset=True)
             if msg_dict.get("content") is None:
                 msg_dict["content"] = ""
@@ -126,13 +123,13 @@ async def run_agent():
             for tool_call in msg.tool_calls:
                 if tool_call.function.name == "evaluate_mse":
                     args = json.loads(tool_call.function.arguments)
-                    alpha_tried = args.get('alpha')
-                    
+                    alpha_tried = float(args.get('alpha'))  # coerce to float
+
                     try:
                         result = await session.call_tool("evaluate_mse", args)
                         result_text = result.content[0].text
                         result_data = json.loads(result_text)
-                        
+
                         mse = result_data.get('mse', float('inf'))
                         print(f"Step {step+1}: evaluate_mse(alpha={alpha_tried}) -> MSE={mse:.2e}")
 
@@ -140,20 +137,20 @@ async def run_agent():
                             "step": step + 1,
                             "alpha": alpha_tried,
                             "mse": mse,
-                        })  
-                        
+                        })
+
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "content": result_text
                         })
-                        
+
                         if mse < 1e-6:
                             print(f"\nSuccess! Found correct alpha: {alpha_tried} with MSE {mse:.2e}")
                             _write_log(log, alpha_tried, success=True)
                             mse_achieved = True
                             break
-                        
+
                     except Exception as e:
                         print(f"Step {step+1}: Tool execution failed: {e}")
                         messages.append({

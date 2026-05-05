@@ -36,7 +36,13 @@ def evaluate_mse(alpha: float) -> str:
     guess based on the MSE trend to minimize it.
     """
     pred_T = solve(T_0, alpha, dt, t_final_c)[0]
-    mse = float(np.mean((pred_T - target_T)**2))
+    
+    sensor_indices = jnp.array([N // 4, N // 2])
+    
+    # mse only at that point
+    pred_sensors = pred_T[sensor_indices]
+    target_sensors = target_T[sensor_indices]
+    mse = float(np.mean((pred_sensors - target_sensors)**2))
     
     return json.dumps({
         "alpha": alpha,
