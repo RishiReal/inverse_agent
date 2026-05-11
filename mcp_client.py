@@ -66,14 +66,16 @@ async def run_agent():
                 "content": (
                     "You are solving an inverse problem for the 1D heat equation: dT/dt = alpha * d²T/dx². "
                     "A Gaussian pulse diffused with unknown alpha. Find alpha.\n\n"
-                    "You can call evaluate_mse(alpha), which returns the error between your simulation "
-                    "and the target. Use previous results to guide your guesses. Try to minimize MSE. "
-                    "Correct your guesses in the direction of decreasing MSE. Stop when MSE < 1e-6."
+                    "You can call evaluate_mse(alpha), which returns the MSE error. "
+                    "After each call you will see the full history of guesses and MSEs. "
+                    "Use the history to identify a bracket [L, U] where the true alpha lies, "
+                    "then evaluate the midpoint. Narrow the bracket each step. "
+                    "Stop when MSE < 1e-6."
                 )
             },
             {
                 "role": "user",
-                "content": "Find the correct alpha. Use the evaluate_mse tool to evaluate your guesses. Stop when MSE < 1e-6."
+                "content": "Find the correct alpha. Use the evaluate_mse tool. Stop when MSE < 1e-6."
             }
         ]
 
@@ -123,7 +125,7 @@ async def run_agent():
             for tool_call in msg.tool_calls:
                 if tool_call.function.name == "evaluate_mse":
                     args = json.loads(tool_call.function.arguments)
-                    alpha_tried = float(args.get('alpha'))  # coerce to float
+                    alpha_tried = float(args.get('alpha'))
 
                     try:
                         result = await session.call_tool("evaluate_mse", args)
@@ -143,6 +145,19 @@ async def run_agent():
                             "role": "tool",
                             "tool_call_id": tool_call.id,
                             "content": result_text
+                        })
+
+                        # inject full history so agent never has to remember
+                        history_lines = "\n".join(
+                            [f"  alpha={s['alpha']:.6f} → MSE={s['mse']:.2e}" for s in log]
+                        )
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"History so far:\n{history_lines}\n\n"
+                                f"Based on the history, identify a lower bound L and upper bound U "
+                                f"that bracket the true alpha, then call evaluate_mse with the midpoint."
+                            )
                         })
 
                         if mse < 1e-6:
@@ -165,6 +180,7 @@ async def run_agent():
         print("\n--- Agent finished without finding exact alpha within steps limit ---")
         _write_log(log, alpha_tried=alpha_tried, success=False)
         return -1
+
 
 if __name__ == "__main__":
     asyncio.run(run_agent())

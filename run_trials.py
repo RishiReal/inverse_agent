@@ -1,25 +1,24 @@
+# run_trials.py
 import asyncio
 import os
 import json
 import subprocess
-import time
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
+from dotenv import load_dotenv
+
+load_dotenv()
 
 ALPHAS   = [0.05, 0.005, 0.006]
 T_FINALS = [1.0, 5.0, 10.0]
 N_TRIALS = 6
-BASE_LOG_DIR = "logs_2_point"
-SLEEP_BETWEEN_TRIALS  = 1   # seconds
-SLEEP_BETWEEN_CONFIGS = 1  # seconds
+BASE_LOG_DIR = "logs_1_point_bisection_search"
+SLEEP_BETWEEN_TRIALS  = 5
+SLEEP_BETWEEN_CONFIGS = 20
 
-# ── API key rotation ──────────────────────────────────────────────
-API_KEYS = [
-    
-]
-API_KEYS = [k for k in API_KEYS if k]  # drop any blanks
+API_KEYS = [os.getenv("GROQ_API_KEY")]
 
 _key_index = 0
 
@@ -32,7 +31,6 @@ def rotate_api_key(reason: str = "rate limit"):
     _key_index += 1
     new = _key_index % len(API_KEYS)
     print(f"  🔄  {reason} — rotating API key {old+1} → {new+1}")
-# ─────────────────────────────────────────────────────────────────
 
 
 def trial_is_done(log_dir: str) -> bool:
@@ -90,13 +88,6 @@ def generate_gif(log_path: str, gif_path: str, true_alpha: float, t_final: float
     print(f"  GIF saved → {gif_path}")
 
 
-RATE_LIMIT_SIGNALS = ["rate_limit", "rate limit", "429", "too many requests", "overloaded"]
-
-def _looks_like_rate_limit(text: str) -> bool:
-    low = text.lower()
-    return any(sig in low for sig in RATE_LIMIT_SIGNALS)
-
-
 async def run_single_trial(alpha: float, t_final: float, trial_num: int):
     log_dir = os.path.join(BASE_LOG_DIR, f"alpha_{alpha}", f"t_{t_final}", f"trial_{trial_num}")
 
@@ -111,37 +102,37 @@ async def run_single_trial(alpha: float, t_final: float, trial_num: int):
     for attempt in range(max_key_attempts):
         env = {
             **os.environ,
-            "HEAT_TRUE_ALPHA":   str(alpha),
-            "HEAT_T_FINAL":      str(t_final),
-            "LOGS_DIR":          log_dir,
-            "GROQ_API_KEY": current_api_key(),   # ← injected here
+            "HEAT_TRUE_ALPHA": str(alpha),
+            "HEAT_T_FINAL":    str(t_final),
+            "LOGS_DIR":        log_dir,
+            "GROQ_API_KEY":    current_api_key(),
         }
 
         print(f"\n{'='*60}")
         print(f"  α={alpha}  t_final={t_final}  trial={trial_num}  key={(_key_index % len(API_KEYS)) + 1}/{len(API_KEYS)}")
         print(f"{'='*60}")
 
+        # capture_output MUST be False — capturing stdout breaks the
+        # stdio pipe between mcp_client.py and mcp_server.py
         result = subprocess.run(
             ["python", "mcp_client.py"],
             env=env,
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            capture_output=True,
-            text=True,
+            capture_output=False,
         )
 
-        combined_output = (result.stdout or "") + (result.stderr or "")
-        print(combined_output)   # still show output
-
-        if result.returncode != 0 and _looks_like_rate_limit(combined_output):
+        # if no log was written, the trial failed — rotate key and retry
+        if not trial_is_done(log_dir):
+            print(f"  ⚠️  No log written (returncode={result.returncode}) — rotating key and retrying...")
             rotate_api_key()
-            print(f"  ⏳  Waiting 5s before retry with new key...")
             await asyncio.sleep(5)
-            continue   # retry with next key
+            continue
 
-        break  # success (or non-rate-limit failure — don't mask it)
+        break  # log exists, trial completed
 
     else:
-        print(f"  ❌  All {len(API_KEYS)} keys exhausted for this trial. Moving on.")
+        print(f"  ❌  All {len(API_KEYS)} keys exhausted for trial α={alpha} t={t_final} #{trial_num}.")
+        return
 
     # generate GIF from the log that was just written
     log_files = sorted([f for f in os.listdir(log_dir) if f.endswith(".json")])
@@ -156,10 +147,9 @@ async def run_single_trial(alpha: float, t_final: float, trial_num: int):
 
 async def main():
     if not API_KEYS:
-        raise ValueError("No API keys found. Set ANTHROPIC_API_KEY_1 … ANTHROPIC_API_KEY_4.")
+        raise ValueError("No API keys configured.")
     print(f"  🔑  Loaded {len(API_KEYS)} API key(s).")
 
-    total   = len(ALPHAS) * len(T_FINALS) * N_TRIALS
     done    = 0
     skipped = 0
 

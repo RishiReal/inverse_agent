@@ -1,0 +1,19 @@
+{
+  "t_final": 10.0,
+  "timestamp": "2026-05-09T22:13:52.198333",
+  "success": true,
+  "final_alpha": 0.05,
+  "n_steps": 2,
+  "steps": [
+    {
+      "step": 3,
+      "alpha": 0.1,
+      "mse": 2.6909529788077546e-05
+    },
+    {
+      "step": 4,
+      "alpha": 0.05,
+      "mse": 0.0
+    }
+  ]
+}

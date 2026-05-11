@@ -37,7 +37,7 @@ def evaluate_mse(alpha: float) -> str:
     """
     pred_T = solve(T_0, alpha, dt, t_final_c)[0]
     
-    sensor_indices = jnp.array([N // 4, N // 2])
+    sensor_indices = jnp.array([N//5])
     
     # mse only at that point
     pred_sensors = pred_T[sensor_indices]
